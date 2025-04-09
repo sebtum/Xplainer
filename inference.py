@@ -8,7 +8,8 @@ from tqdm import tqdm
 
 from chestxray14 import ChestXray14Dataset
 from chexpert import CheXpertDataset
-from descriptors import disease_descriptors_chexpert, disease_descriptors_chestxray14
+from mimic_dataset import MimicDataset
+from descriptors import disease_descriptors_chexpert, disease_descriptors_chestxray14, disease_descriptors_mimic
 from model import InferenceModel
 from utils import calculate_auroc
 
@@ -103,14 +104,65 @@ def inference_chestxray14():
     for idx, key in enumerate(all_keys_clean[1:]):
         print(f'{key}: {per_disease_auroc[idx]:.5f}')
 
+def inference_mimic():
+    # Create the dataset from your CSV file containing dicom_id, xplainer diseases, and image path.
+    dataset = MimicDataset(f'/data/geraugi/plural/dataset_files/500_xplainer_mimic_dataset.csv')  # Your CSV file for test split
+    dataloader = DataLoader(dataset, batch_size=1, shuffle=False, collate_fn=lambda x: x, num_workers=0)
+    
+    inference_model = InferenceModel()
+    # Get all disease descriptors from the model using your MIMIC-specific descriptors.
+    all_descriptors = inference_model.get_all_descriptors(disease_descriptors_mimic)
+
+    all_labels = []
+    all_probs_neg = []
+
+    for batch in tqdm(dataloader):
+        # Since batch is a list with one item, we get the first (and only) element.
+        batch = batch[0]
+        image_path, labels, keys = batch
+        
+        image_path = Path(image_path)
+        probs, negative_probs = inference_model.get_descriptor_probs(image_path, descriptors=all_descriptors)
+        
+        # Get disease-level probabilities using the MIMIC descriptors.
+        disease_probs, negative_disease_probs = inference_model.get_diseases_probs(
+            disease_descriptors_mimic, pos_probs=probs, negative_probs=negative_probs)
+        
+        # Generate predictions using binary prompting.
+        predicted_diseases, prob_vector_neg_prompt = inference_model.get_predictions_bin_prompting(
+            disease_descriptors_mimic, disease_probs=disease_probs,
+            negative_disease_probs=negative_disease_probs, keys=keys)
+
+        all_labels.append(labels)
+        all_probs_neg.append(prob_vector_neg_prompt)
+        gc.collect()
+
+    # Stack results into tensors
+    all_labels = torch.stack(all_labels)
+    all_probs_neg = torch.stack(all_probs_neg)
+
+    # Filter out diseases that are not present in any ground truth instance.
+    existing_mask = sum(all_labels, 0) > 0
+    all_labels_clean = all_labels[:, existing_mask]
+    all_probs_neg_clean = all_probs_neg[:, existing_mask]
+    all_keys_clean = [key for idx, key in enumerate(keys) if existing_mask[idx]]
+
+    # Evaluate using AUROC calculation function
+    overall_auroc, per_disease_auroc = calculate_auroc(all_probs_neg_clean, all_labels_clean)
+    print(f"AUROC: {overall_auroc:.5f}\n")
+    for idx, key in enumerate(all_keys_clean):
+        print(f'{key}: {per_disease_auroc[idx]:.5f}')
+
 
 if __name__ == '__main__':
     # add argument parser
     parser = argparse.ArgumentParser()
-    parser.add_argument('--dataset', type=str, default='chexpert', help='chexpert or chestxray14')
+    parser.add_argument('--dataset', type=str, default='mimic', help='mimic, chexpert or chestxray14')
     args = parser.parse_args()
 
     if args.dataset == 'chexpert':
         inference_chexpert()
     elif args.dataset == 'chestxray14':
         inference_chestxray14()
+    elif args.dataset == 'mimic':
+        inference_mimic()
