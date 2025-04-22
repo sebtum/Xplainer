@@ -18,7 +18,9 @@ class InferenceModel():
             image_inference_engine=self.image_inference,
             text_inference_engine=self.text_inference,
         )
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        #self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        #FIX ME
+        self.device = "cpu"
         self.image_text_inference.to(self.device)
 
         # caches for faster inference
@@ -58,15 +60,25 @@ class InferenceModel():
         assert projected_img_emb.ndim == 2
         return projected_img_emb[0]
 
-    def get_descriptor_probs(self, image_path: Path, descriptors: List[str], do_negative_prompting=True, demo=False):
+    def get_descriptor_probs(self, dicom_id, image_path: Path, descriptors: List[str], do_negative_prompting=True, demo=False, use_cache_file=False, cached_image_embeddings_df=None):
         probs = {}
         negative_probs = {}
-        if image_path in self.image_embedding_cache:
-            image_embedding = self.image_embedding_cache[image_path]
+        if use_cache_file:
+            # 1. Get the cached row as a Series
+            row = cached_image_embeddings_df.loc[dicom_id]
+            if row.empty:
+                raise KeyError(f"No entry for dicom_id={dicom_id}")
+            # 2. Convert to NumPy and then to tensor
+            emb_array     = row.to_numpy()         
+            emb_tensor    = torch.from_numpy(emb_array).float()
+            image_embedding = emb_tensor 
         else:
-            image_embedding = self.image_text_inference.image_inference_engine.get_projected_global_embedding(image_path)
-            if not demo:
-                self.image_embedding_cache[image_path] = image_embedding
+            if image_path in self.image_embedding_cache:
+                image_embedding = self.image_embedding_cache[image_path]
+            else:
+                image_embedding = self.image_text_inference.image_inference_engine.get_projected_global_embedding(image_path)
+                if not demo:
+                    self.image_embedding_cache[image_path] = image_embedding
 
         # Default get_similarity_score_from_raw_data would load the image every time. Instead we only load once.
         for desc in descriptors:
@@ -84,7 +96,7 @@ class InferenceModel():
 
             probs[desc] = pos_prob
 
-        return probs, negative_probs
+        return probs, negative_probs, image_embedding
 
     def get_all_descriptors(self, disease_descriptors):
         all_descriptors = set()
@@ -140,19 +152,47 @@ class InferenceModel():
 
     # Negative vs Positive Prompting
     def get_predictions_bin_prompting(self, disease_descriptors, disease_probs, negative_disease_probs, keys):
-        predicted_diseases = []
-        prob_vector = torch.zeros(len(keys), dtype=torch.float)  # num of diseases
-        for idx, disease in enumerate(disease_descriptors):
+        # Create a probability vector of length equal to the number of diseases.
+        # We also create a binary prediction vector (0 = negative, 1 = positive).
+        prob_vector = torch.zeros(len(keys), dtype=torch.float)
+        neg_prob_vector = torch.zeros(len(keys), dtype=torch.float)
+        predicted_vector = torch.zeros(len(keys), dtype=torch.int)  # binary predictions
+
+        # Loop over all disease descriptors provided by the model.
+        for disease in disease_descriptors:
+            # Skip processing for 'No Finding'
             if disease == 'No Finding':
                 continue
-            pos_neg_scores = torch.tensor([disease_probs[disease], negative_disease_probs[disease]])
-            prob_vector[keys.index(disease)] = pos_neg_scores[0]
-            if torch.argmax(pos_neg_scores) == 0:  # Positive is More likely
-                predicted_diseases.append(disease)
+            # Get positive and negative scores for this disease.
+            pos_score = disease_probs[disease]
+            neg_score = negative_disease_probs[disease]
+            # Find the index of the disease in keys.
+            disease_idx = keys.index(disease)
+            # Record the positive score into our probability vector.
+            prob_vector[disease_idx] = pos_score
+            neg_prob_vector[disease_idx] = neg_score
+            # Make the prediction based on comparing positive and negative scores.
+            if pos_score > neg_score:
+                predicted_vector[disease_idx] = 1  # Predicted as positive.
+            else:
+                predicted_vector[disease_idx] = 0  # Predicted as negative.
 
-        if len(predicted_diseases) == 0:  # No finding rule based
-            prob_vector[0] = 1.0 - max(prob_vector)
-        else:
-            prob_vector[0] = 1.0 - max(prob_vector)
+        # Handle the 'No Findings' case.
+        # We assume that 'No Findings' is included in keys.
+        if "No Findings" in keys:
+            no_findings_idx = keys.index("No Findings")
+            # The rule here is:
+            # If no other disease is predicted as positive, set "No Findings" to 1.
+            # Otherwise, set "No Findings" to be the complement of the maximum probability
+            # among the other diseases.
+            if torch.sum(predicted_vector) == 0:
+                predicted_vector[no_findings_idx] = 1
+            else:
+                predicted_vector[no_findings_idx] = 0
+            # For the probability vector, we follow your previous logic.
+            prob_vector[no_findings_idx] = 1.0 - max(prob_vector)
+            neg_prob_vector[no_findings_idx] = max(prob_vector) 
 
-        return predicted_diseases, prob_vector
+        # Return the binary vector (predicted_vector) which is comparable with the labels,
+        # and also the prob_vector if you need it for further analysis.
+        return predicted_vector, prob_vector, neg_prob_vector

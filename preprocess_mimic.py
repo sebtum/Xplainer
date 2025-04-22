@@ -1,33 +1,102 @@
-import pandas as pd
+import os
+import io
+import tarfile
 from pathlib import Path
 from PIL import Image
-import tarfile
-import io
+import pandas as pd
 from tqdm import tqdm
-import os
+import numpy as np
+from concurrent.futures import ProcessPoolExecutor
 
-def convert_images():
+def process_chunk(chunk_df, process_id, input_tar_file, output_tar_file, out_tar_file_base_name):
+    """
+    Process a subset (chunk) of the CSV rows. For each row, open the image from the input tar,
+    resize it and add it to an output tar file unique to this process.
+    
+    Returns a tuple: (list of index records, path to the partial tar file)
+    """
+    # Create a process-specific output tar file.
+    part_tar_path = output_tar_file.with_name(output_tar_file.stem + f".part{process_id}" + output_tar_file.suffix)
+    processed_records = []
+    
+    # Open the output tar file in write mode.
+    with tarfile.open(part_tar_path, "w") as tar_out:
+        # Each process opens its own read handle on the input tar.
+        with tarfile.open(input_tar_file, 'r') as tar_in:
+            # Get the underlying file object for random access.
+            f_in = tar_in.fileobj
+            for _, row in chunk_df.iterrows():
+                dicom_id = row['dicom_id']
+                output_filename = f"{dicom_id}.jpg"
+                try:
+                    offset = int(row['offset'])
+                    size = int(row['size'])
+                except Exception as e:
+                    print(f"Process {process_id}: Error parsing offset/size for {dicom_id}: {e}")
+                    continue
+
+                try:
+                    f_in.seek(offset)
+                    image_data = f_in.read(size)
+                except Exception as e:
+                    print(f"Process {process_id}: Error reading bytes for {dicom_id} at offset {offset} with size {size}: {e}")
+                    continue
+
+                try:
+                    img = Image.open(io.BytesIO(image_data))
+                except Exception as e:
+                    print(f"Process {process_id}: Error opening image for {dicom_id}: {e}")
+                    continue
+
+                # Convert to RGB and resize.
+                img = img.convert("RGB")
+                if img.size[0] < img.size[1]:
+                    new_size = (512, int(512 * img.size[1] / img.size[0]))
+                else:
+                    new_size = (int(512 * img.size[0] / img.size[1]), 512)
+                img = img.resize(new_size)
+
+                # Save image into a BytesIO buffer.
+                buf = io.BytesIO()
+                img.save(buf, format="JPEG")
+                buf.seek(0)
+
+                # Get current output tar offset.
+                current_offset = tar_out.fileobj.tell()
+
+                # Create a header and add the file.
+                tarinfo = tarfile.TarInfo(name=output_filename)
+                tarinfo.size = len(buf.getbuffer())
+                tar_out.addfile(tarinfo, fileobj=buf)
+
+                # Build a record for the index CSV.
+                record = {
+                    "dicom_id": dicom_id,
+                    "tar_path": part_tar_path,
+                    "member_path": output_filename,
+                    "offset": current_offset,
+                    "size": tarinfo.size,
+                    "disease_vector": row["xplainer_diseases"]
+                }
+                processed_records.append(record)
+    return processed_records, part_tar_path
+
+def convert_images_parallel():
     # Define paths (update these to match your environment)
     root_dir = Path("/data")
-    csv_file = root_dir / 'geraugi/plural/pre_processed_data/xplainer_mimic_dataset.csv' # CSV with columns: 'dicom_id' and 'tar_path'
-    input_tar_file = root_dir / 'dataset/MIMIC_CXR/images-2.0.0.tar'    # Tar archive containing the original images
-    output_tar_file = root_dir / 'geraugi/plural/dataset_files/resized_images-2.0.0.tar'  # Output tar file for resized images
+    csv_file = root_dir / 'geraugi/plural/pre_processed_data/xplainer_mimic_dataset.csv'  # Must contain columns including 'dicom_id', 'offset', 'size', 'xplainer_diseases'
+    input_tar_file = root_dir / 'dataset/MIMIC_CXR/images-2.0.0.tar'    # Input tar archive with original images
+    output_tar_file = root_dir / 'geraugi/plural/dataset_files/resized_images-2.0.0.tar'  # Final output tar file that will result from merging partial tars
     index_csv_file = root_dir / 'geraugi/plural/dataset_files/500_xplainer_mimic_dataset.csv'
-    # Extract the base file name
-    out_tar_file_name = os.path.basename(output_tar_file)  # "resized_images-2.0.0.tar"
-    out_tar_file_base_name, ext = os.path.splitext(out_tar_file_name) 
 
-    # Read the CSV file
+    # Use the base file name (for the "tar_path" field in the index CSV).
+    out_tar_file_base_name = os.path.basename(output_tar_file)  # e.g., "resized_images-2.0.0.tar"
+
+    # Load the CSV.
     df = pd.read_csv(csv_file)
+    #df = df.head(800) # FIX ME!!
 
-    # Decide the mode for the output tar file:
-    # If the file exists and its size is > 0, use append ("a"); otherwise, write ("w").
-    if output_tar_file.exists() and output_tar_file.stat().st_size > 0:
-        mode = "a"
-    else:
-        mode = "w"
-
-    # Create a list to store records for the new resized images.
+    # If index CSV already exists, load processed dicom_ids and filter out those records.
     processed_records = []
     existing_dicom_ids = set()
     if index_csv_file.exists():
@@ -38,80 +107,39 @@ def convert_images():
     else:
         print("No index CSV found; starting from scratch.")
     
-    # Open the output tar file
-    with tarfile.open(output_tar_file, mode) as tar_out:
-        # Open the input tar file once
-        with tarfile.open(input_tar_file, 'r') as tar_in:
-            # Get the underlying file object for random access.
-            f = tar_in.fileobj
-            print(f"Processing {input_tar_file}")
-            for idx, row in tqdm(df.iterrows(), total=len(df)):
-                dicom_id = row['dicom_id']
-                # Define the output filename (we use dicom_id.jpg as a unique identifier)
-                output_filename = f"{dicom_id}.jpg"
-                
-                # Check if we've already processed this file by checking our current processed_records.
-                if any(record['dicom_id'] == dicom_id for record in processed_records):
-                    continue
+    if existing_dicom_ids:
+        df = df[~df['dicom_id'].isin(existing_dicom_ids)]
+        df.reset_index(drop=True, inplace=True)
+        print(f"{len(df)} records remaining after filtering already processed entries.")
 
-                try:
-                    # Read offset and size information from the CSV.
-                    offset = int(row['offset'])
-                    size = int(row['size'])
-                except Exception as e:
-                    print(f"Error parsing offset/size for {dicom_id}: {e}")
-                    continue
+    # Split the DataFrame into 8 roughly equal chunks.
+    num_processes = 8
+    chunks = np.array_split(df, num_processes)
 
-                # Seek directly to the offset in the tar file and read exactly 'size' bytes.
-                try:
-                    f.seek(offset)
-                    image_data = f.read(size)
-                except Exception as e:
-                    print(f"Error reading bytes for {dicom_id} at offset {offset} with size {size}: {e}")
-                    continue
+    all_records = []
+    part_tar_files = []
+    # Use ProcessPoolExecutor to run the chunks in parallel.
+    with ProcessPoolExecutor(max_workers=num_processes) as executor:
+        futures = []
+        for i, chunk in enumerate(chunks):
+            futures.append(executor.submit(
+                process_chunk, chunk, i, input_tar_file, output_tar_file, out_tar_file_base_name))
+        for future in tqdm(futures, desc="Processing chunks"):
+            records, part_tar_path = future.result()
+            all_records.extend(records)
+            part_tar_files.append(part_tar_path)
 
-                # Open the image from the BytesIO buffer
-                try:
-                    img = Image.open(io.BytesIO(image_data))
-                except Exception as e:
-                    print(f"Error opening image for {dicom_id}: {e}")
-                    continue
-
-                # Convert image to RGB and resize
-                img = img.convert("RGB")
-                if img.size[0] < img.size[1]:
-                    new_size = (512, int(512 * img.size[1] / img.size[0]))
-                else:
-                    new_size = (int(512 * img.size[0] / img.size[1]), 512)
-                img = img.resize(new_size)
-
-                # Save the resized image into a BytesIO buffer
-                buf = io.BytesIO()
-                img.save(buf, format="JPEG")
-                buf.seek(0)
-
-                # Record the current offset in the output tar file.
-                current_offset = tar_out.fileobj.tell()
-
-                # Prepare the tar header for the new file.
-                tarinfo = tarfile.TarInfo(name=output_filename)
-                tarinfo.size = len(buf.getbuffer())
-                tar_out.addfile(tarinfo, fileobj=buf)
-
-                # Create a record for this file.
-                record = {
-                    "dicom_id": dicom_id,
-                    "tar_path": f'{out_tar_file_base_name}/{output_filename}',
-                    "offset": current_offset,
-                    "size": tarinfo.size,
-                    "disease_vector": row["xplainer_diseases"]
-                }
-                processed_records.append(record)
-
-    # Write (or overwrite) the index CSV file with the processed records.
-    df_index = pd.DataFrame(processed_records)
+    # Combine any previously processed records.
+    all_records.extend(processed_records)
+    df_index = pd.DataFrame(all_records)
     df_index.to_csv(index_csv_file, index=False)
     print(f"Index CSV saved to {index_csv_file}")
 
+    print("Partial tar files are kept separately:")
+    for part_file in sorted(part_tar_files):
+        print(f"  {part_file}")
+
 if __name__ == "__main__":
-    convert_images()
+    # On Windows, the multiprocessing module requires
+    # the entry point to be guarded by if __name__=='__main__'.
+    convert_images_parallel()
