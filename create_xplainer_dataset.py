@@ -1,6 +1,7 @@
 import pandas as pd
 import ast
 def main():
+    ref = "ref_"
     # list of 31 disease names (the order corresponds to positions in the multi-hot vector)
     plural_diseases = [
         'atelectasis', 'pleural effusion', 'lung opacity', 'edema', 
@@ -46,13 +47,13 @@ def main():
 
     # Now you have another DataFrame 'df_images' that contains:
     # 'dicom_id' and 'image_path'
-    df_images = pd.read_csv('/data/geraugi/plural/pre_processed_data/dicom_to_tar_image_path.csv')
+    df_images = pd.read_csv(f'/data/geraugi/plural/pre_processed_data/{ref}dicom_to_tar_image_path.csv')
 
     # Merge the two DataFrames on 'dicom_id'
     df_merged = pd.merge(df_images, df_labels[['dicom_id', 'xplainer_diseases']], on='dicom_id', how='inner')
     # FIX ME: check if i am missing info
-    output_file = '/data/geraugi/plural/pre_processed_data/xplainer_dataset.csv'
-    print(f"Creating file for xplainer dataset: {output_file}")
+    output_file = f'/data/geraugi/plural/pre_processed_data/{ref}xplainer_dataset.csv'
+    print(f"Creating file for {ref}xplainer dataset: {output_file}")
     print(df_merged.head())
     df_merged.to_csv(output_file)
 

@@ -117,11 +117,16 @@ def inference_chestxray14():
     for idx, key in enumerate(all_keys_clean[1:]):
         print(f'{key}: {per_disease_auroc[idx]:.5f}')
 
-def inference_mimic(part):
+def inference_mimic(part,ref=False):
     
     # Create the dataset from your CSV file containing dicom_id, xplainer diseases, and image path.
-    dataset_path = f'/data/geraugi/plural/dataset_files/500_xplainer_mimic_dataset_part{part}.csv'
-    cache_file = f'/data/geraugi/plural/dataset_files/image_embeddings_cache_part{part}.csv'
+    if ref == True:
+        dataset_path = f'/data/geraugi/plural/dataset_files/correct_500_ref_xplainer_mimic_dataset.csv'
+        cache_file = f'/data/geraugi/plural/dataset_files/ref_image_embeddings_cache.csv'
+        logging.info("Special case: Using remaining reference images for inference")
+    else:
+        dataset_path = f'/data/geraugi/plural/dataset_files/500_xplainer_mimic_dataset_part{part}.csv'
+        cache_file = f'/data/geraugi/plural/dataset_files/image_embeddings_cache_part{part}.csv'
     logging.info(f"Starting inference on mimic dataset {dataset_path}")
     dataset = MimicDataset(dataset_path)  # Your CSV file for test split
     
@@ -263,13 +268,17 @@ def inference_mimic(part):
 
 
     # Save the labels and probabilities to output CSV files
-    output_folder = create_output_folder()
-    labels_csv_path = os.path.join(output_folder, f"xp_inf_labels_{part}.csv")
-    probabilities_csv_path = os.path.join(output_folder, f"xp_inf_probabilities_{part}.csv")
-    neg_probs_csv_path = os.path.join(output_folder, f"xp_inf_neg_probabilities_{part}.csv")
-    pred_csv_path = os.path.join(output_folder, f"xp_inf_predictions_{part}.csv")
-    confusion_path = os.path.join(output_folder, f'confusion_matrix_part{part}.csv')
-    desc_prob_path = os.path.join(output_folder, f'descriptor_probs_long_part{part}.csv')
+    output_folder = create_output_folder(ref=ref)
+    if ref == True:
+        suffix = 'ref'
+    else:
+        suffix = part
+    labels_csv_path = os.path.join(output_folder, f"xp_inf_labels_{suffix}.csv")
+    probabilities_csv_path = os.path.join(output_folder, f"xp_inf_probabilities_{suffix}.csv")
+    neg_probs_csv_path = os.path.join(output_folder, f"xp_inf_neg_probabilities_{suffix}.csv")
+    pred_csv_path = os.path.join(output_folder, f"xp_inf_predictions_{suffix}.csv")
+    confusion_path = os.path.join(output_folder, f'confusion_matrix_{suffix}.csv')
+    desc_prob_path = os.path.join(output_folder, f'descriptor_probs_long_{suffix}.csv')
      
     df_labels.to_csv(labels_csv_path)
     df_probs.to_csv(probabilities_csv_path)
@@ -302,10 +311,11 @@ def inference_mimic(part):
             f"Average Precision: {avg_prec:.4f}   "
         )
 
-def create_output_folder(base_path='/data/geraugi/plural/dataset_files', folder_name='xplainer_inference'):
+def create_output_folder(base_path='/data/geraugi/plural/dataset_files', folder_name='xplainer_inference', ref=False):
     # Get current timestamp
     timestamp = datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
-    
+    if ref:
+        folder_name = f"ref_{folder_name}"
     # Create folder path
     output_folder = os.path.join(base_path, f"{folder_name}_{timestamp}")
     
@@ -350,6 +360,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--dataset', type=str, default='mimic', help='mimic, chexpert or chestxray14')
     parser.add_argument('--part', type=str, default='0', help='0-7')
+    parser.add_argument('--ref', action='store_true', help='use remaining reference images')
     args = parser.parse_args()
 
     if args.dataset == 'chexpert':
@@ -357,4 +368,4 @@ if __name__ == '__main__':
     elif args.dataset == 'chestxray14':
         inference_chestxray14()
     elif args.dataset == 'mimic':
-        inference_mimic(args.part)
+        inference_mimic(args.part, args.ref)

@@ -139,7 +139,82 @@ def convert_images_parallel():
     for part_file in sorted(part_tar_files):
         print(f"  {part_file}")
 
+def convert_images_singleprocess():
+    # Define paths (update these to match your environment)
+    root_dir = Path("/data")
+    csv_file = root_dir / 'geraugi/plural/pre_processed_data/ref_xplainer_mimic_dataset.csv'
+    input_tar_file = root_dir / 'dataset/MIMIC_CXR/images-2.0.0.tar'
+    output_tar_file = root_dir / 'geraugi/plural/dataset_files/resized_ref_images-2.0.0.tar'
+    index_csv_file = root_dir / 'geraugi/plural/dataset_files/500_ref_xplainer_mimic_dataset.csv'
+
+    # Load CSV of images to process
+    df = pd.read_csv(csv_file)
+
+    processed_records = []
+
+    # Open input and output tar files once
+    with tarfile.open(input_tar_file, 'r') as tar_in, \
+         tarfile.open(output_tar_file, 'w') as tar_out:
+        f_in = tar_in.fileobj
+        current_offset = 0
+
+        for _, row in tqdm(df.iterrows(), total=len(df), desc="Processing images"):
+            dicom_id = row['dicom_id']
+            out_name = f"{dicom_id}.jpg"
+
+            try:
+                offset = int(row['offset'])
+                size = int(row['size'])
+            except Exception as e:
+                print(f"Skipping {dicom_id}: invalid offset/size ({e})")
+                continue
+
+            # Read raw image bytes
+            f_in.seek(offset)
+            data = f_in.read(size)
+
+            # Load and process image
+            try:
+                img = Image.open(io.BytesIO(data)).convert('RGB')
+            except Exception as e:
+                print(f"Skipping {dicom_id}: cannot open image ({e})")
+                continue
+
+            # Resize with aspect ratio
+            w, h = img.size
+            if w < h:
+                new_size = (512, int(512 * h / w))
+            else:
+                new_size = (int(512 * w / h), 512)
+            img = img.resize(new_size)
+
+            # Save to buffer
+            buf = io.BytesIO()
+            img.save(buf, format='JPEG')
+            buf.seek(0)
+
+            # Record offset then add to tar
+            current_offset = tar_out.fileobj.tell()
+            info = tarfile.TarInfo(name=out_name)
+            info.size = buf.getbuffer().nbytes
+            tar_out.addfile(info, fileobj=buf)
+
+            # Append record
+            processed_records.append({
+                'dicom_id': dicom_id,
+                'tar_path': str(output_tar_file),
+                'member_path': out_name,
+                'offset': current_offset,
+                'size': info.size,
+                'disease_vector': row.get('xplainer_diseases', None)
+            })
+
+    # Save index CSV
+    pd.DataFrame(processed_records).to_csv(index_csv_file, index=False)
+    print(f"Finished. Index saved to {index_csv_file}")
+
 if __name__ == "__main__":
     # On Windows, the multiprocessing module requires
     # the entry point to be guarded by if __name__=='__main__'.
-    convert_images_parallel()
+    #convert_images_parallel()
+    convert_images_singleprocess()
