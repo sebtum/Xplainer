@@ -292,3 +292,161 @@ disease_descriptors_mimic = {
         "Thickening of intestinal folds"
       ]
     }
+
+disease_diagnosis_mimic = {
+    "No Finding": ["No Finding"],
+    "Lung Opacity": [
+        "lung opacity"
+    ],
+    "Fracture": [
+        "fracture"
+      ],
+    "Cardiomegaly": [
+        "cardiomegaly"
+    ],
+    "Edema": [
+        "edema",
+    ],
+    "Consolidation": [
+        "consolidation"
+    ],
+    "Pneumonia": [
+        "pneumonia"
+    ],
+    "Atelectasis": [
+        "atelectasis"
+      ],
+    "Pneumothorax": [
+        "pneumothorax"
+      ],
+    "Pleural Effusion": [
+        "pleural effusion"
+      ],
+    "Emphysema": [
+        "emphysema"
+      ],
+    "Pleural Thickening": [
+        "pleural thickening"
+      ],
+    "Hernia": [
+        "hernia"
+      ]
+    }
+
+chex0_descriptors_mimic = {
+    "Atelectasis": [
+        "atelectasis",
+        "plate atelectasis",
+        "subsegmental atelectasis",
+    ],
+    "Cardiomegaly": [
+        "cardiomegaly",
+        "mild cardiomegaly",
+        "moderate cardiomegaly",
+        "severe cardiomegaly",
+    ],
+    "Consolidation": [
+        "consolidation",
+        "suggestive of consolidation",
+    ],
+    "Edema": [
+        "edema",
+        "mild pulmonary edema",
+        "moderate pulmonary edema",
+        "severe pulmonary edema",
+    ],
+    "Emphysema": [
+        "emphysema",
+        "parenchymal lung lesion",
+    ],
+    "Fracture": [
+        "fracture",
+        "rib fracture",
+    ],
+    "Hernia": [
+        "hernia",
+    ],
+    "Lung Opacity": [
+        "lung opacity",
+        "bilateral opacity",
+        "basal opacity",
+    ],
+    "Pleural Effusion": [
+        "pleural effusion",
+        "left pleural effusion",
+        "right pleural effusion",
+        "bilateral pleural effusion",
+    ],
+    "Pleural Thickening": [
+        "pleural thickening",
+    ],
+    "Pneumonia": [
+        "pneumonia",
+        "suggestive of pneumonia",
+    ],
+    "Pneumothorax": [
+        "pneumothorax",
+        "apical pneumothorax",
+    ],
+    }
+
+chex0_neg_descriptors_mimic = {
+    "No Atelectasis": [
+        "lungs are clear",
+        "no acute cardiopulmonary process",
+        "normal study",
+        "no atelectasis",
+    ],
+    "No Cardiomegaly": [
+        "heart size is normal",
+        "no acute cardiopulmonary process",
+        "normal study",
+        "no cardiomegaly",
+    ],
+    "No Consolidation": [
+        "normal study",
+        "no consolidation",
+    ],
+    "No Edema": [
+        "no pulmonary edema",
+        "no acute cardiopulmonary process",
+        "normal study",
+        "no edema",
+    ],
+    "No Emphysema": [
+        "no acute cardiopulmonary process",
+        "no emphysema",
+    ],
+    "No Fracture": [
+        "no acute cardiopulmonary process",
+        "no fracture",
+    ],
+    "No Hernia": [
+        "no acute cardiopulmonary process",
+        "no hernia",
+    ],
+    "No Lung Opacity": [
+        "no focal opacity",
+        "lung volumes are normal",
+        "no lung opacity",
+    ],
+    "No Pleural Effusion": [
+        "no acute cardiopulmonary process",
+        "normal study",
+        "no pleural effusion",
+    ],
+    "No Pleural Thickening": [
+        "no acute cardiopulmonary process",
+        "no pleural thickening",
+    ],
+    "No Pneumonia": [
+        "lungs are clear",
+        "no acute cardiopulmonary process",
+        "normal study",
+        "no pneumonia",
+    ],
+    "No Pneumothorax": [
+        "no pneumothorax",
+        "normal study",
+    ],
+    }
