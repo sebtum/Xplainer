@@ -14,7 +14,7 @@ from sklearn.metrics import f1_score, precision_score, recall_score, average_pre
 from chestxray14 import ChestXray14Dataset
 from chexpert import CheXpertDataset
 from mimic_dataset import MimicDataset
-from descriptors import disease_descriptors_chexpert, disease_descriptors_chestxray14, disease_descriptors_mimic
+from descriptors import disease_descriptors_chexpert, disease_descriptors_chestxray14, disease_descriptors_mimic, disease_diagnosis_mimic, chex0_descriptors_mimic, chex0_neg_descriptors_mimic
 from model import InferenceModel
 from utils import calculate_auroc
 import logging
@@ -117,8 +117,10 @@ def inference_chestxray14():
     for idx, key in enumerate(all_keys_clean[1:]):
         print(f'{key}: {per_disease_auroc[idx]:.5f}')
 
-def inference_mimic(part,ref=False):
+def inference_mimic(part,ref=False, diagnosis=False, threshold_based=False, prototyping=False, output_folder=None):
     
+    assert output_folder is not None, "Output folder must be specified"
+    assert os.path.exists(output_folder), f"Output folder {output_folder} does not exist"
     # Create the dataset from your CSV file containing dicom_id, xplainer diseases, and image path.
     if ref == True:
         dataset_path = f'/data/geraugi/plural/dataset_files/correct_500_ref_xplainer_mimic_dataset.csv'
@@ -134,7 +136,12 @@ def inference_mimic(part,ref=False):
     
     inference_model = InferenceModel()
     # Get all disease descriptors from the model using your MIMIC-specific descriptors.
-    all_descriptors = inference_model.get_all_descriptors(disease_descriptors_mimic)
+    if diagnosis:
+        all_descriptors = inference_model.get_all_descriptors_only_disease(disease_diagnosis_mimic)
+    elif prototyping:
+        disease_descriptors = [chex0_descriptors_mimic, chex0_neg_descriptors_mimic]
+    else:
+        all_descriptors = inference_model.get_all_descriptors(disease_descriptors_mimic)
 
     all_labels = []
     all_probs_neg = []
@@ -143,7 +150,9 @@ def inference_mimic(part,ref=False):
     all_neg_probs_neg = []
     desc_prob_rows = []  # will hold one dict per (dicom_id, descriptor) pair
     all_image_embeddings = []
+    all_probs_thr = []
 
+    threshold = 0.5
     interval = 600
     total   = len(dataloader)
     use_cache_file = False
@@ -166,30 +175,60 @@ def inference_mimic(part,ref=False):
             dicom_id = str(image_path).replace(".jpg", "")
         all_dicom_ids.append(dicom_id)
         
-        probs, negative_probs, image_embedding = inference_model.get_descriptor_probs(dicom_id, image_path, all_descriptors, use_cache_file=use_cache_file, cached_image_embeddings_df=cached_image_embeddings_df )
+        if prototyping:
+            disease_probs, negative_disease_probs, image_embedding = inference_model.get_prototype_probs(
+                dicom_id, image_path, disease_descriptors, use_cache_file=use_cache_file,
+                cached_image_embeddings_df=cached_image_embeddings_df, threshold_based=threshold_based)
+            if threshold_based:
+                predicted_diseases, prob_vector_threshold = inference_model.get_predictions(
+                    disease_descriptors[0], threshold=threshold, disease_probs=disease_probs, keys=keys)
+            else:
+                predicted_diseases, prob_vector_neg_prompt, neg_prob_vector_neg_prompt= inference_model.get_predictions_bin_prompting(
+                    disease_descriptors[0], disease_probs=disease_probs,
+                    negative_disease_probs=negative_disease_probs, keys=keys)
+        else:
+            probs, negative_probs, image_embedding = inference_model.get_descriptor_probs(
+                dicom_id, image_path, all_descriptors, use_cache_file=use_cache_file, 
+                cached_image_embeddings_df=cached_image_embeddings_df, diagnosis=diagnosis)
 
-        for desc, p in probs.items():
-            n = negative_probs.get(desc, None)
-            desc_prob_rows.append({
-                'dicom_id': dicom_id,
-                'descriptor': desc,
-                'prob': float(p),       # ensure JSON‑serializable / native type
-                'neg_prob': float(n)    # same here
-            })
-        
-        # Get disease-level probabilities using the MIMIC descriptors.
-        disease_probs, negative_disease_probs = inference_model.get_diseases_probs(
-            disease_descriptors_mimic, pos_probs=probs, negative_probs=negative_probs)
-        
-        # Generate predictions using binary prompting.
-        predicted_diseases, prob_vector_neg_prompt, neg_prob_vector_neg_prompt= inference_model.get_predictions_bin_prompting(
-            disease_descriptors_mimic, disease_probs=disease_probs,
-            negative_disease_probs=negative_disease_probs, keys=keys)
+            if diagnosis:
+                disease_probs, negative_disease_probs = inference_model.get_diseases_probs(
+                    disease_diagnosis_mimic, pos_probs=probs, negative_probs=negative_probs, diagnosis=diagnosis)
+                if threshold_based:
+                    predicted_diseases, prob_vector_threshold = inference_model.get_predictions(
+                        disease_diagnosis_mimic, threshold=threshold, disease_probs=disease_probs, keys=keys)
+                else:
+                    predicted_diseases, prob_vector_neg_prompt, neg_prob_vector_neg_prompt= inference_model.get_predictions_bin_prompting(
+                        disease_diagnosis_mimic, disease_probs=disease_probs,
+                        negative_disease_probs=negative_disease_probs, keys=keys)
+            else:
+                for desc, p in probs.items():
+                    n = negative_probs.get(desc, None)
+                    desc_prob_rows.append({
+                        'dicom_id': dicom_id,
+                        'descriptor': desc,
+                        'prob': float(p),       # ensure JSON‑serializable / native type
+                        'neg_prob': float(n)    # same here
+                    })
+                # Get disease-level probabilities using the MIMIC descriptors.
+                disease_probs, negative_disease_probs = inference_model.get_diseases_probs(
+                    disease_descriptors_mimic, pos_probs=probs, negative_probs=negative_probs)
+                # Generate predictions using binary prompting.
+                if threshold_based:
+                    predicted_diseases, prob_vector_threshold = inference_model.get_predictions(
+                        disease_descriptors_mimic, threshold=threshold, disease_probs=disease_probs, keys=keys)
+                else:
+                    predicted_diseases, prob_vector_neg_prompt, neg_prob_vector_neg_prompt= inference_model.get_predictions_bin_prompting(
+                        disease_descriptors_mimic, disease_probs=disease_probs,
+                        negative_disease_probs=negative_disease_probs, keys=keys)
 
         all_predicted_diseases.append(predicted_diseases)
         all_labels.append(labels)
-        all_probs_neg.append(prob_vector_neg_prompt)
-        all_neg_probs_neg.append(neg_prob_vector_neg_prompt)
+        if threshold_based:
+            all_probs_thr.append(prob_vector_threshold)
+        else:
+            all_probs_neg.append(prob_vector_neg_prompt)
+            all_neg_probs_neg.append(neg_prob_vector_neg_prompt)
         if use_cache_file == False:
             all_image_embeddings.append(image_embedding)
         gc.collect()
@@ -197,21 +236,28 @@ def inference_mimic(part,ref=False):
         if i % interval == 0 or i == total:
             logging.info(f"Processed {i}/{total} — last dicom: {dicom_id}")
 
-    # Construct a dicom_id, descriptor, prob, neg_prob dataframe
-    desc_prob_df = pd.DataFrame.from_records(desc_prob_rows)  
-    desc_prob_df.set_index('dicom_id', inplace=True)
+    if not diagnosis and not prototyping:
+        # Construct a dicom_id, descriptor, prob, neg_prob dataframe
+        desc_prob_df = pd.DataFrame.from_records(desc_prob_rows)  
+        desc_prob_df.set_index('dicom_id', inplace=True)
 
     # Stack results into tensors
     all_predicted_diseases = torch.stack(all_predicted_diseases)
     all_labels = torch.stack(all_labels)
-    all_probs_neg = torch.stack(all_probs_neg)
-    all_neg_probs_neg = torch.stack(all_neg_probs_neg)
+    if threshold_based:
+        all_probs_thr = torch.stack(all_probs_thr)
+    else:
+        all_probs_neg = torch.stack(all_probs_neg)
+        all_neg_probs_neg = torch.stack(all_neg_probs_neg)
 
     # Filter out diseases that are not present in any ground truth instance.
     existing_mask = sum(all_labels, 0) > 0
     all_labels_clean = all_labels[:, existing_mask]
-    all_probs_neg_clean = all_probs_neg[:, existing_mask]
-    all_neg_probs_neg_clean = all_neg_probs_neg[:, existing_mask]
+    if threshold_based:
+        all_probs_thr_clean = all_probs_thr[:, existing_mask]
+    else:
+        all_probs_neg_clean = all_probs_neg[:, existing_mask]
+        all_neg_probs_neg_clean = all_neg_probs_neg[:, existing_mask]
     all_predicted_diseases_clean = all_predicted_diseases[:, existing_mask]
     all_keys_clean = [key for idx, key in enumerate(keys) if existing_mask[idx]]
 
@@ -228,21 +274,28 @@ def inference_mimic(part,ref=False):
         logging.info(f"{disease}: {n_labels} actual, {n_preds} predicted, prevalence (π): {random_perf:.4f}")
 
     # Evaluate AUROC overall and per disease (using your calculate_auroc function).
-    overall_auroc, per_disease_auroc = calculate_auroc(all_probs_neg_clean, all_labels_clean)
+    if threshold_based:
+        overall_auroc, per_disease_auroc = calculate_auroc(all_probs_thr_clean, all_labels_clean)
+    else:
+        overall_auroc, per_disease_auroc = calculate_auroc(all_probs_neg_clean, all_labels_clean)
     logging.info(f"AUROC (overall): {overall_auroc:.5f}")
     for idx, key in enumerate(all_keys_clean):
         logging.info(f'{key}: {per_disease_auroc[idx]:.5f}')
    
     # Convert tensors to numpy arrays for DataFrame creation.
     labels_np = all_labels_clean.cpu().numpy()  # (N_samples, D)
-    probs_np = all_probs_neg_clean.cpu().numpy()  # (N_samples, D)
-    neg_probs_np = all_neg_probs_neg_clean.cpu().numpy()  # (N_samples, D)
+    if threshold_based:
+        probs_np = all_probs_thr_clean.cpu().numpy()
+    else:
+        probs_np = all_probs_neg_clean.cpu().numpy()  # (N_samples, D)
+        neg_probs_np = all_neg_probs_neg_clean.cpu().numpy()  # (N_samples, D)
     pred_np = all_predicted_diseases_clean.cpu().numpy()
 
     # Build DataFrames with dicom_ids as row index and diseases as columns.
     df_labels = pd.DataFrame(data=labels_np, index=all_dicom_ids, columns=all_keys_clean)
     df_probs = pd.DataFrame(data=probs_np, index=all_dicom_ids, columns=all_keys_clean)
-    df_neg_probs = pd.DataFrame(data=neg_probs_np, index=all_dicom_ids, columns=all_keys_clean)
+    if not threshold_based:
+        df_neg_probs = pd.DataFrame(data=neg_probs_np, index=all_dicom_ids, columns=all_keys_clean)
     df_pred = pd.DataFrame(data=pred_np, index=all_dicom_ids, columns=all_keys_clean)
     if use_cache_file == False:
         np_img_embs = np.stack([t.cpu().numpy() for t in all_image_embeddings], axis=0)
@@ -268,7 +321,7 @@ def inference_mimic(part,ref=False):
 
 
     # Save the labels and probabilities to output CSV files
-    output_folder = create_output_folder(ref=ref)
+    #output_folder = create_output_folder(ref=ref)
     if ref == True:
         suffix = 'ref'
     else:
@@ -282,12 +335,18 @@ def inference_mimic(part,ref=False):
      
     df_labels.to_csv(labels_csv_path)
     df_probs.to_csv(probabilities_csv_path)
-    df_neg_probs.to_csv(neg_probs_csv_path)
+    if not threshold_based:
+        df_neg_probs.to_csv(neg_probs_csv_path)
     df_pred.to_csv(pred_csv_path)
     confusion_df = compute_confusion_df(df_pred, df_labels)
 
-    logging.info(f"Disease labels and their probabilities, and descriptor probabilities saved to CSV:\n {labels_csv_path}\n{probabilities_csv_path}\n{neg_probs_csv_path}\n{desc_prob_path}")
-    desc_prob_df.to_csv(desc_prob_path)
+    logging.info(f"Disease labels and their probabilities saved to CSV:\n {labels_csv_path}\n{probabilities_csv_path}")
+    
+    if not threshold_based:
+        logging.info(f"Disease negated prompt probabilities saved to CSV: {neg_probs_csv_path}")
+    if not diagnosis and not prototyping:
+        logging.info(f"Descriptor probabilities saved to CSV: {desc_prob_path}")
+        desc_prob_df.to_csv(desc_prob_path)
 
     confusion_df.to_csv(confusion_path)
     logging.info(f"Confusion matrix saved to CSV: {confusion_path}")
@@ -296,7 +355,10 @@ def inference_mimic(part,ref=False):
     for idx, disease in enumerate(all_keys_clean):
         y_true = all_labels_clean[:, idx].numpy()               # ground‑truth 0/1
         y_pred = all_predicted_diseases_clean[:, idx].numpy()   # predicted  0/1
-        y_score  = all_probs_neg_clean[:, idx].numpy() 
+        if threshold_based:
+            y_score  = all_probs_thr_clean[:, idx].numpy()
+        else:
+            y_score  = all_probs_neg_clean[:, idx].numpy() 
 
         f1   = f1_score(y_true, y_pred, zero_division=0)
         prec = precision_score(y_true, y_pred, zero_division=0)
@@ -361,6 +423,10 @@ if __name__ == '__main__':
     parser.add_argument('--dataset', type=str, default='mimic', help='mimic, chexpert or chestxray14')
     parser.add_argument('--part', type=str, default='0', help='0-7')
     parser.add_argument('--ref', action='store_true', help='use remaining reference images')
+    parser.add_argument('--diagnosis', action='store_true', help='use disease names as descriptors')
+    parser.add_argument('--prototyping', action='store_true', help='use chex0 descriptors for mimic and average their embeddings before calculating similarity')
+    parser.add_argument('--threshold_based', action='store_true', help='classify as 1 if prob > threshold')
+    parser.add_argument('--output_folder', type=str, default=None, help='output folder for the results')
     args = parser.parse_args()
 
     if args.dataset == 'chexpert':
@@ -368,4 +434,4 @@ if __name__ == '__main__':
     elif args.dataset == 'chestxray14':
         inference_chestxray14()
     elif args.dataset == 'mimic':
-        inference_mimic(args.part, args.ref)
+        inference_mimic(args.part, args.ref, args.diagnosis, args.threshold_based, args.prototyping, args.output_folder)
